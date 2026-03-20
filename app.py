@@ -1,7 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # 页面基础设置
 st.set_page_config(page_title="我们的宏观风险哨兵", layout="wide", initial_sidebar_state="expanded")
@@ -15,7 +15,8 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 st.title("🛡️ 宏观经济传导逻辑预警")
-st.caption(f"数据更新时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 专属分析看板")
+beijing_time = datetime.utcnow() + timedelta(hours=8)
+st.caption(f"数据更新时间: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间) | 专属分析看板")
 
 # --- 侧边栏：预警逻辑配置 ---
 with st.sidebar:
