@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import requests
 
 # --- 1. 页面基础设置 ---
 st.set_page_config(page_title="我们的宏观风险哨兵 V1.1", layout="wide", initial_sidebar_state="expanded")
@@ -49,31 +50,36 @@ with st.sidebar:
     time_frame = st.radio("选择K线周期", ["日线 (D)", "周线 (W)", "月线 (M)"], index=0, horizontal=True)
 
 # --- 3. 数据抓取与缓存函数 ---
+HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
 @st.cache_data(ttl=3600) # 缓存1小时
 def fetch_metric_data():
-    """抓取用于顶部 metric 卡片的数据（最近2天）"""
     data = {}
     for name, ticker in TICKERS.items():
         try:
-            val = yf.Ticker(ticker).history(period="2d")['Close']
-            if name == "10Y美债收益率":
-                current_val, prev_val = val.iloc[-1] / 10, val.iloc[-2] / 10 # 修正数值逻辑
+            # 使用更健壮的 download 方法，并增加重试逻辑
+            df = yf.download(ticker, period="5d", interval="1d", progress=False, timeout=10)
+            if not df.empty and len(df) >= 2:
+                # 兼容 yfinance 新旧版本的索引方式
+                current_val = float(df['Close'].iloc[-1])
+                prev_val = float(df['Close'].iloc[-2])
+                
+                if name == "10Y美债收益率":
+                    current_val, prev_val = current_val / 10, prev_val / 10
+                
+                data[name] = {"current": current_val, "prev": prev_val}
             else:
-                current_val, prev_val = val.iloc[-1], val.iloc[-2]
-            data[name] = {"current": current_val, "prev": prev_val}
+                st.warning(f"{name} 数据暂时不可用")
         except Exception as e:
-            st.error(f"抓取 {name} 数据失败: {e}")
+            st.error(f"抓取 {name} 失败: {e}")
     return data
 
 @st.cache_data(ttl=3600)
 def fetch_chart_data(ticker, tf_str):
-    """抓取用于绘制K线图的历史数据"""
-    # 根据用户选择的周期决定抓取范围
     period_map = {"日线 (D)": ("1y", "1d"), "周线 (W)": ("5y", "1wk"), "月线 (M)": ("max", "1mo")}
     p, i = period_map[tf_str]
-    df = yf.Ticker(ticker).history(period=p, interval=i)
-    # 对美债进行数值修正
-    if ticker == "^TNX":
+    # 使用 download 替代 Ticker().history
+    df = yf.download(ticker, period=p, interval=i, progress=False, timeout=15)
+    if not df.empty and ticker == "^TNX":
         df[['Open', 'High', 'Low', 'Close']] = df[['Open', 'High', 'Low', 'Close']] / 10
     return df
 
