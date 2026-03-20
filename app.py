@@ -79,4 +79,4 @@ except Exception as e:
 
 # 底部署名
 st.markdown("---")
-st.markdown("💡 *本看板由 AI 辅助开发，逻辑仅供参考*")
+st.markdown("💡 *蚂蚁和帅仔人生无限公司技术支持*")
