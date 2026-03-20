@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="宏观风险哨兵 | 蚂蚁和帅仔", layout="wide")
 beijing_time = datetime.utcnow() + timedelta(hours=8)
 
+# CSS 优化
 st.markdown("""
     <style>
     .stMetric { background-color: #ffffff; padding: 10px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
@@ -51,13 +52,13 @@ def fetch_all_data():
     return results
 
 # --- 3. 渲染 ---
-st.title("🛡️ @蚂蚁和帅仔")
-st.caption(f"更新于: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间) | 动态轴优化版")
+st.title("🛡️ 全球宏观因子同步走势看板")
+st.caption(f"更新于: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')} (北京时间) | 动态聚焦版")
 
 data = fetch_all_data()
 
 if data:
-    # 指标卡片
+    # 顶部卡片
     cols = st.columns(4)
     names = list(data.keys())
     for i in range(4):
@@ -67,27 +68,44 @@ if data:
     st.divider()
 
     # 核心：纵向对齐看板
-    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05, subplot_titles=names)
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.06, subplot_titles=names)
     cutoff_date = data[names[0]]['history'].index[-1] - timedelta(days=days_map[lookback])
     colors = ['#26a69a', '#2962ff', '#787b86', '#ef5350']
 
     for i, name in enumerate(names):
         s = data[name]['history']
         df_p = s[s.index >= cutoff_date]
-        fig.add_trace(go.Scatter(x=df_p.index, y=df_p.values, fill='tozeroy', line=dict(width=2, color=colors[i]), name=name), row=i+1, col=1)
+        
+        # --- 修改点1：去掉 fill='tozeroy'，改为纯折线或淡色填充 ---
+        fig.add_trace(go.Scatter(
+            x=df_p.index, 
+            y=df_p.values, 
+            line=dict(width=2.5, color=colors[i]),
+            name=name,
+            # fill='tonexty' # 如果非要填充，用这个，或者直接去掉fill
+        ), row=i+1, col=1)
 
-    # --- 关键修改：动态调整纵坐标 ---
-    fig.update_layout(height=1000, showlegend=False, template='plotly_white', hovermode="x unified")
+    # 布局优化
+    fig.update_layout(
+        height=1000, 
+        showlegend=False, 
+        template='plotly_white', 
+        hovermode="x unified"
+    )
     
-    # 强制所有子图的 Y 轴不从 0 开始，自动聚焦波动区间
+    # --- 修改点2：强制 Y 轴不包含 0，实现真正的动态聚焦 ---
     fig.update_yaxes(
         side="right", 
-        autorange=True,      # 核心设置：自动根据数据极值缩放
-        fixedrange=False, 
-        zeroline=False,      # 不强制画出 0 刻度线
+        matches=None,        # 确保每个子图独立缩放
         showgrid=True, 
-        gridcolor='#eeeeee'
+        gridcolor='#eeeeee',
+        zeroline=False,      # 彻底关闭 0 刻度线
+        rangemode='normal'   # 不强制包含 0
     )
+
+    # 针对每个子图单独应用 autorange，确保聚焦
+    for i in range(1, 5):
+        fig.update_yaxes(autorange=True, row=i, col=1)
     
     st.plotly_chart(fig, use_container_width=True)
 
@@ -101,4 +119,4 @@ if data:
     l_cols[3].status("4. 估值下修", state="error" if bond_v > bond_limit else "complete")
 
 st.markdown("---")
-st.markdown("💡 **蚂蚁和帅仔人生无限公司** | 动态坐标轴已激活：图表会自动放大近期波动。")
+st.markdown("💡 **动态聚焦已修正**：现在 Y 轴会根据数据的最大/最小值自动锁定，波动将非常显著。")
