@@ -123,102 +123,101 @@ if page == "🛡️ 宏观哨兵":
         r_cols[2].status("3. 流动性收紧压力", state="error" if bond_v > bond_limit else "complete")
         r_cols[3].status("4. 估值下修预警", state="error" if bond_v > bond_limit else "complete")
 
-# --- [模块 4: 资产配置 - 极简录入与自动计算版] ---
+# --- [模块 4: 资产配置 - 极简兼容版] ---
 elif page == "💰 资产配置":
     st.title("💰 资产持仓自动管理")
     
-    # 1. 自动初始化数据 (如果 JSON 为空)
+    # 1. 初始化数据
     if 'df_portfolio' not in st.session_state:
         st.session_state.df_portfolio = load_data()
 
     # 2. 极简录入区
     with st.expander("📝 录入中心 (只需填写代码和份额)", expanded=True):
-        st.write("请输入 yfinance 格式代码（如 AAPL, 0700.HK, 600519.SS）")
-        
-        # 定义编辑器的列配置
-        raw_editor = st.data_editor(
-            st.session_state.df_portfolio[["资产名称", "代码", "持仓份额"]], # 隐藏计算列，只录入基础信息
-            num_rows="dynamic",
-            use_container_width=True,
-            key="simple_editor",
-            column_config={
-                "资产名称": st.column_config.TextColumn("资产简称 (可选)", help="若留空将自动抓取官方名称"),
-                "代码": st.column_config.TextColumn("证券代码 (必填)", placeholder="AAPL / 0700.HK"),
-                "持仓份额": st.column_config.NumberColumn("持仓股数", min_value=0, step=1)
-            }
-        )
-        
-        c_save, c_refresh = st.columns([1, 5])
-        if c_save.button("💾 保存修改"):
+        # 修复建议：简化 column_config 以提升兼容性
+        try:
+            raw_editor = st.data_editor(
+                st.session_state.df_portfolio[["资产名称", "代码", "持仓份额"]],
+                num_rows="dynamic",
+                use_container_width=True,
+                key="simple_editor"
+            )
+        except Exception as e:
+            st.error(f"编辑器加载失败，请尝试刷新页面。报错详情: {e}")
+            raw_editor = st.session_state.df_portfolio
+
+        c_save, _ = st.columns([1, 5])
+        if c_save.button("💾 保存配置"):
             save_data(raw_editor)
             st.session_state.df_portfolio = raw_editor
-            st.success("✅ 持仓配置已永久保存！")
+            st.success("✅ 持仓已永久保存！")
             st.rerun()
 
     # 3. 自动计算引擎
     st.divider()
     if st.button("🚀 执行全量自动计算"):
-        with st.spinner("正在穿透全球市场获取最新财务数据..."):
+        with st.spinner("正在同步全球行情与资产信息..."):
             processed_rows = []
             for _, item in st.session_state.df_portfolio.iterrows():
                 ticker_str = str(item["代码"]).strip()
-                if not ticker_str or ticker_str == "None": continue
+                if not ticker_str or ticker_str == "" or ticker_str == "None": 
+                    continue
                 
                 try:
                     tk = yf.Ticker(ticker_str)
-                    info = tk.info
-                    # 自动获取名称：如果手动录入了则用手动的，否则抓官方名
-                    display_name = item["资产名称"] if pd.notna(item["资产名称"]) and item["资产名称"] != "" else info.get('shortName', ticker_str)
+                    # 关键优化：自动抓取名称逻辑
+                    # 如果用户没填名称，则取 info 里的 shortName，再取不到就用代码本身
+                    raw_name = item.get("资产名称", "")
+                    if pd.isna(raw_name) or raw_name == "":
+                        display_name = tk.info.get('shortName', ticker_str)
+                    else:
+                        display_name = raw_name
                     
-                    # 获取实时价格
-                    price = tk.history(period="1d")['Close'].iloc[-1]
-                    # 获取 PE
-                    pe = info.get('trailingPE', info.get('forwardPE', "N/A"))
-                    # 获取币种
-                    currency = info.get('currency', 'USD')
+                    # 获取行情
+                    hist = tk.history(period="1d")
+                    if hist.empty:
+                        st.warning(f"⚠️ 无法获取 {ticker_str} 的价格，请检查代码格式。")
+                        continue
+                        
+                    price = hist['Close'].iloc[-1]
+                    pe = tk.info.get('trailingPE', "N/A")
+                    currency = tk.info.get('currency', 'USD')
 
                     processed_rows.append({
                         "资产名称": display_name,
                         "代码": ticker_str,
-                        "持仓份额": item["持仓份额"],
-                        "实时现价": round(price, 2),
+                        "份额": item["持仓份额"],
+                        "现价": round(price, 2),
                         "市值": round(price * item["持仓份额"], 2),
-                        "市盈率(PE)": round(pe, 2) if isinstance(pe, (int, float)) else "N/A",
+                        "PE": pe,
                         "币种": currency
                     })
-                except Exception as e:
-                    st.error(f"代码 {ticker_str} 解析失败: {e}")
+                except Exception:
+                    continue
 
             if processed_rows:
                 calc_df = pd.DataFrame(processed_rows)
-                # 计算权重
                 total_val = calc_df["市值"].sum()
-                calc_df["权重(%)"] = (calc_df["市值"] / total_val * 100).round(2)
+                calc_df["权重%"] = (calc_df["市值"] / total_val * 100).round(2)
 
-                # 汇总展示
-                m1, m2, m3 = st.columns(3)
-                m1.metric("持仓总市值", f"${total_val:,.2f}")
-                m2.metric("重仓标的", calc_df.loc[calc_df["权重(%)"].idxmax()]["资产名称"])
-                m3.metric("平均 PE", f"{calc_df[calc_df['市盈率(PE)'] != 'N/A']['市盈率(PE)'].mean():.2f}")
+                # 顶部摘要
+                m1, m2 = st.columns(2)
+                m1.metric("总资产估值 (不计汇率)", f"${total_val:,.2f}")
+                m2.metric("核心头寸", calc_df.loc[calc_df["权重%"].idxmax()]["资产名称"])
 
-                # 最终报表：只显示用户最关心的表头
-                st.subheader("📊 实时持仓透视表")
+                # 最终透视表
+                st.subheader("📊 实时透视报表")
                 st.dataframe(
-                    calc_df[["资产名称", "代码", "持仓份额", "实时现价", "市值", "权重(%)", "市盈率(PE)", "币种"]],
-                    column_config={
-                        "权重(%)": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100),
-                        "市值": st.column_config.NumberColumn(format="$ %.2f")
-                    },
+                    calc_df[["资产名称", "代码", "份额", "现价", "市值", "权重%", "PE", "币种"]],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # 资产分布可视化
+                # 分布图
                 fig_pie = go.Figure(data=[go.Pie(labels=calc_df["资产名称"], values=calc_df["市值"], hole=.4)])
-                fig_pie.update_layout(title="资产配置权重分布", height=450)
+                fig_pie.update_layout(height=400, margin=dict(t=30, b=0, l=0, r=0))
                 st.plotly_chart(fig_pie, use_container_width=True)
             else:
-                st.warning("暂无有效持仓数据，请先在上方录入代码。")
+                st.info("💡 请先在上方录入代码和份额，然后点击计算。")
 
 
 st.markdown("---")
