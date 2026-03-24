@@ -4,6 +4,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from fredapi import Fred
 import yfinance as yf
+import json
+import os
 from datetime import datetime, timedelta
 
 # --- [模块 1: 基础配置与 CSS] ---
@@ -90,87 +92,65 @@ if page == "🛡️ 宏观哨兵":
 
 # --- [模块 4: 资产配置 (在线修改优化版)] ---
 elif page == "💰 资产配置":
-    st.title("💰 资产配置在线管理")
+    st.title("💰 资产持仓永久管理")
     
-    # 1. 初始化或获取 session_state 中的持仓数据
-    if 'portfolio_data' not in st.session_state:
-        st.session_state.portfolio_data = pd.DataFrame([
-            {"资产名称": "腾讯控股", "代码": "0700.HK", "持仓份额": 500},
-            {"资产名称": "标普500ETF", "代码": "VOO", "持仓份额": 50},
-            {"资产名称": "纳指100ETF", "代码": "QQQ", "持仓份额": 30}
-        ])
+    # 加载现有持仓
+    if 'df_portfolio' not in st.session_state:
+        st.session_state.df_portfolio = load_data()
 
-    st.subheader("📝 编辑持仓")
-    st.info("💡 提示：在表格中修改代码(yfinance格式)或份额，系统将自动重算市值。")
-    
-    # 使用 data_editor 实现交互式修改
-    edited_df = st.data_editor(
-        st.session_state.portfolio_data,
-        num_rows="dynamic", # 允许动态增减行
-        use_container_width=True,
-        key="portfolio_editor"
-    )
-    
-    # 当用户修改数据时，保存到状态中
-    st.session_state.portfolio_data = edited_df
+    # 1. 编辑区域
+    with st.expander("🛠️ 编辑持仓数据 (修改后记得点保存)", expanded=True):
+        edited_df = st.data_editor(
+            st.session_state.df_portfolio,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="main_editor"
+        )
+        
+        if st.button("💾 保存持仓到云端"):
+            save_data(edited_df)
+            st.session_state.df_portfolio = edited_df
+            st.success("✅ 持仓已同步至 JSON 数据库！")
 
-    # 2. 实时行情抓取函数
-    @st.cache_data(ttl=300) # 持仓数据缓存 5 分钟
-    def sync_market_data(df):
-        rows = []
-        for _, item in df.iterrows():
-            ticker_code = str(item["代码"]).strip()
-            if not ticker_code: continue
-            try:
-                tk = yf.Ticker(ticker_code)
-                # 抓取价格和PE
-                hist = tk.history(period="1d")
-                if not hist.empty:
-                    price = hist['Close'].iloc[-1]
+    # 2. 行情分析
+    st.divider()
+    if st.button("🚀 刷新实时行情"):
+        @st.cache_data(ttl=300)
+        def get_prices(df):
+            rows = []
+            for _, item in df.iterrows():
+                try:
+                    tk = yf.Ticker(str(item["代码"]))
+                    price = tk.history(period="1d")['Close'].iloc[-1]
                     pe = tk.info.get('trailingPE', 0)
                     rows.append({
-                        "资产": item["资产名称"],
-                        "代码": ticker_code,
-                        "份额": item["持仓份额"],
-                        "现价": round(price, 2),
-                        "市值": round(price * item["持仓份额"], 2),
-                        "PE": pe if pe else "N/A"
+                        "资产": item["资产名称"], "代码": item["代码"], 
+                        "份额": item["持仓份额"], "现价": round(price, 2),
+                        "市值": round(price * item["持仓份额"], 2), "PE": pe if pe else "N/A"
                     })
-            except:
-                st.warning(f"无法同步代码: {ticker_code}")
-        return pd.DataFrame(rows)
+                except: pass
+            return pd.DataFrame(rows)
 
-    # 3. 计算与展示
-    if st.button("🚀 同步行情并计算"):
-        with st.spinner("正在从交易所拉取实时报价..."):
-            display_df = sync_market_data(st.session_state.portfolio_data)
+        final_df = get_prices(st.session_state.df_portfolio)
+        
+        if not final_df.empty:
+            total = final_df["市值"].sum()
+            final_df["权重%"] = (final_df["市值"] / total * 100).round(2)
             
-            if not display_df.empty:
-                total_val = display_df["市值"].sum()
-                display_df["权重(%)"] = (display_df["市值"] / total_val * 100).round(2)
-
-                st.divider()
-                c1, c2, c3 = st.columns(3)
-                c1.metric("总资产概算", f"${total_val:,.2f}")
-                c2.metric("持仓数量", len(display_df))
-                c3.metric("核心敞口", display_df.loc[display_df["权重(%)"].idxmax()]["资产"])
-
-                # 展示最终结果表
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-                # 绘图对比
-                col_left, col_right = st.columns(2)
-                with col_left:
-                    fig_pie = go.Figure(data=[go.Pie(labels=display_df["资产"], values=display_df["市值"], hole=.4)])
-                    fig_pie.update_layout(title="资产市值权重", margin=dict(t=30, b=0, l=0, r=0))
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                with col_right:
-                    # 过滤 N/A 的 PE 进行对比
-                    pe_plot_df = display_df[display_df["PE"] != "N/A"]
-                    fig_bar = go.Bar(x=pe_plot_df["资产"], y=pe_plot_df["PE"], marker_color='#2962ff')
-                    st.plotly_chart(go.Figure(data=[fig_bar], layout=dict(title="持仓估值对比(PE)", margin=dict(t=30, b=0, l=0, r=0))), use_container_width=True)
-            else:
-                st.error("未发现有效代码，请检查表格中的'代码'列是否符合 yfinance 格式。")
+            c1, c2 = st.columns(2)
+            c1.metric("总资产估值", f"${total:,.2f}")
+            c2.metric("最大头寸", final_df.loc[final_df["权重%"].idxmax()]["资产"])
+            
+            st.dataframe(final_df, use_container_width=True, hide_index=True)
+            
+            # 可视化
+            p_cols = st.columns(2)
+            with p_cols[0]:
+                fig_p = go.Figure(data=[go.Pie(labels=final_df["资产"], values=final_df["市值"], hole=.4)])
+                st.plotly_chart(fig_p, use_container_width=True)
+            with p_cols[1]:
+                pe_df = final_df[final_df["PE"] != "N/A"]
+                st.plotly_chart(go.Figure(data=[go.Bar(x=pe_df["资产"], y=pe_df["PE"])]), use_container_width=True)
 
 st.markdown("---")
 st.caption("💡 蚂蚁和帅仔人生无限公司 | V2.2 模块化对齐版")
