@@ -6,11 +6,18 @@ from fredapi import Fred
 import yfinance as yf
 from datetime import datetime, timedelta
 
-# --- 1. 基础配置 ---
+# --- [模块 1: 基础配置与 CSS] ---
 st.set_page_config(page_title="蚂蚁和帅仔的私人终端", layout="wide")
 beijing_time = datetime.utcnow() + timedelta(hours=8)
 
-# 安全获取 FRED Key
+st.markdown("""
+    <style>
+    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: 1px solid #f0f2f6; }
+    [data-testid="stMetricValue"] { font-size: 28px; font-weight: 700; color: #1e1e1e; }
+    .stStatus { border-radius: 8px; }
+    </style>
+    """, unsafe_allow_html=True)
+
 try:
     fred_key = st.secrets["FRED_API_KEY"]
     fred = Fred(api_key=fred_key)
@@ -18,26 +25,33 @@ except Exception:
     st.error("❌ 未在 Secrets 中检测到 FRED_API_KEY")
     st.stop()
 
-# --- 2. 侧边栏导航 ---
+# --- [模块 2: 侧边栏导航] ---
 with st.sidebar:
-    st.title("💼 导航中心")
-    page = st.radio("前往页面", ["🛡️ 宏观哨兵", "💰 资产配置"])
+    st.title("💼 私人交易终端")
+    page = st.radio("功能切换", ["🛡️ 宏观哨兵", "💰 资产配置"])
     st.divider()
-
-# --- 3. 页面：宏观哨兵 (复用之前的逻辑) ---
-if page == "🛡️ 宏观哨兵":
-    st.title("🛡️ 宏观经济传导逻辑预警")
     
-    # (此处省略部分重复的配置代码以节省篇幅，实际运行时逻辑完全保留)
+    if page == "🛡️ 宏观哨兵":
+        st.header("⚙️ 监控配置")
+        oil_limit = st.slider("原油预警线 ($)", 70, 150, 100)
+        bond_limit = st.slider("10Y美债预警线 (%)", 3.0, 6.0, 4.5)
+        lookback = st.radio("历史跨度", ["1个月", "3个月", "6个月", "1年", "5年"], index=2)
+        rows_map = {"1个月": 22, "3个月": 66, "6个月": 132, "1年": 252, "5年": 1260}
+
+# --- [模块 3: 宏观哨兵逻辑] ---
+if page == "🛡️ 宏观哨兵":
+    st.title("🛡️ 宏观经济传导预警")
+    st.caption(f"数据源: FRED | 更新时间: {beijing_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
     FRED_TICKERS = {
         "布伦特原油 ($)": "DCOILBRENTEU",
         "10Y美债收益率 (%)": "DGS10",
         "美元指数 (DXY)": "DTWEXAFEGS", 
         "纳斯达克100 (指数)": "NASDAQ100"
     }
-    
+
     @st.cache_data(ttl=3600)
-    def fetch_fred_data():
+    def fetch_fred_stable():
         results = {}
         for name, code in FRED_TICKERS.items():
             try:
@@ -46,28 +60,39 @@ if page == "🛡️ 宏观哨兵":
             except: pass
         return results
 
-    data = fetch_fred_data()
+    data = fetch_fred_stable()
     if data:
-        # 指标卡片
-        cols = st.columns(4)
-        for i, (name, val) in enumerate(data.items()):
-            cols[i].metric(name, f"{val['current']:.2f}", f"{val['current']-val['prev']:.2f}")
+        # 指标卡
+        m_cols = st.columns(4)
+        for idx, (name, val) in enumerate(data.items()):
+            m_cols[idx].metric(name, f"{val['current']:.2f}", f"{val['current']-val['prev']:.2f}")
+
+        # 图表 (保留动态缩放和物理切片)
+        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05, subplot_titles=list(data.keys()))
+        colors = ['#26a69a', '#2962ff', '#787b86', '#ef5350']
         
-        # 绘图逻辑 (tail 252 约等于一年)
-        fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.05)
         for i, name in enumerate(data.keys()):
-            df_p = data[name]['history'].tail(252)
-            fig.add_trace(go.Scatter(x=df_p.index, y=df_p.values, name=name), row=i+1, col=1)
-        fig.update_layout(height=800, template='plotly_white')
+            df_plot = data[name]['history'].tail(rows_map[lookback])
+            fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot.values, line=dict(color=colors[i], width=2), name=name), row=i+1, col=1)
+
+        fig.update_layout(height=900, template='plotly_white', hovermode="x unified", showlegend=False)
+        fig.update_yaxes(side="right", autorange=True, zeroline=False, rangemode='normal')
         st.plotly_chart(fig, use_container_width=True)
 
-# --- 4. 页面：资产配置管理 ---
+        # 风险推演
+        st.divider()
+        oil_v, bond_v = data["布伦特原油 ($)"]["current"], data["10Y美债收益率 (%)"]["current"]
+        r_cols = st.columns(4)
+        r_cols[0].status("1. 石油/供给冲击", state="error" if oil_v > oil_limit else "complete")
+        r_cols[1].status("2. 通胀上行风险", state="error" if oil_v > oil_limit else "complete")
+        r_cols[2].status("3. 流动性收紧压力", state="error" if bond_v > bond_limit else "complete")
+        r_cols[3].status("4. 估值下修预警", state="error" if bond_v > bond_limit else "complete")
+
+# --- [模块 4: 资产配置逻辑] ---
 elif page == "💰 资产配置":
-    st.title("💰 个人资产配置持仓管理")
+    st.title("💰 个人持仓管理")
     
-    # A. 定义你的持仓数据 (在这里修改你的持仓)
-    # 格式: 名称: [yfinance代码, 持仓份额]
-    # 注意: A股后缀为 .SS 或 .SZ, 港股为 .HK, 美股直接填代码
+    # 模拟持仓数据 (后续可改为 st.data_editor 让用户在页面修改)
     MY_ASSETS = {
         "腾讯控股": ["0700.HK", 500],
         "标普500ETF": ["VOO", 50],
@@ -76,73 +101,38 @@ elif page == "💰 资产配置":
     }
 
     @st.cache_data(ttl=600)
-    def fetch_portfolio_data(assets):
+    def get_portfolio_info(assets):
         rows = []
-        for name, info in assets.items():
-            ticker_code, shares = info[0], info[1]
+        for name, (ticker, shares) in assets.items():
             try:
-                tk = yf.Ticker(ticker_code)
-                # 获取实时价格
+                tk = yf.Ticker(ticker)
+                # 兼容处理：yfinance 返回数据
                 price = tk.history(period="1d")['Close'].iloc[-1]
-                # 获取市盈率 (PE)
-                pe = tk.info.get('trailingPE', 'N/A')
-                # 获取货币单位
-                currency = tk.info.get('currency', 'USD')
-                
+                pe = tk.info.get('trailingPE', 0)
                 rows.append({
-                    "资产名称": name,
-                    "代码": ticker_code,
-                    "持仓份额": shares,
-                    "实时价格": round(price, 2),
-                    "市值 (本币)": round(price * shares, 2),
-                    "市盈率 (PE)": pe,
-                    "币种": currency
+                    "资产": name, "代码": ticker, "份额": shares, 
+                    "价格": round(price, 2), "市值": round(price * shares, 2), "PE": pe
                 })
-            except:
-                st.warning(f"无法获取 {name} 的实时数据")
+            except: pass
         return pd.DataFrame(rows)
 
-    with st.spinner("正在同步全球证券市场行情..."):
-        df_portfolio = fetch_portfolio_data(MY_ASSETS)
+    df = get_portfolio_info(MY_ASSETS)
+    if not df.empty:
+        total = df["市值"].sum()
+        df["权重(%)"] = (df["市值"] / total * 100).round(2)
 
-    if not df_portfolio.empty:
-        # B. 计算汇总数据
-        # 注意：此处简化处理，假设所有市值已按汇率换算（实际进阶版需增加汇率转换）
-        total_value = df_portfolio["市值 (本币)"].sum()
-        df_portfolio["权重 (%)"] = (df_portfolio["市值 (本币)"] / total_value * 100).round(2)
+        # 汇总卡
+        c1, c2 = st.columns(2)
+        c1.metric("总资产估值 (概算)", f"${total:,.2f}")
+        c2.metric("最大头寸", df.loc[df["权重(%)"].idxmax()]["资产"])
 
-        # C. 顶部汇总卡片
-        m1, m2 = st.columns(2)
-        m1.metric("持仓总市值 (折合概算)", f"${total_value:,.2f}")
-        m2.metric("主要风险敞口", df_portfolio.loc[df_portfolio["权重 (%)"].idxmax()]["资产名称"])
+        # 表格展示
+        st.dataframe(df, use_container_width=True, hide_index=True)
 
-        # D. 展示持仓表格
-        st.subheader("📋 详细持仓清单")
-        st.dataframe(
-            df_portfolio,
-            column_config={
-                "实时价格": st.column_config.NumberColumn(format="¥ %.2f" if "SS" in str(df_portfolio["代码"]) else "$ %.2f"),
-                "权重 (%)": st.column_config.ProgressColumn(min_value=0, max_value=100)
-            },
-            hide_index=True,
-            use_container_width=True
-        )
+        # 饼图
+        fig_p = go.Figure(data=[go.Pie(labels=df["资产"], values=df["市值"], hole=.4)])
+        fig_p.update_layout(height=400, margin=dict(t=30, b=0, l=0, r=0))
+        st.plotly_chart(fig_p, use_container_width=True)
 
-        # E. 资产分布图
-        col_left, col_right = st.columns(2)
-        with col_left:
-            st.subheader("🍕 资产权重分布")
-            fig_pie = go.Figure(data=[go.Pie(labels=df_portfolio["资产名称"], values=df_portfolio["权重 (%)"], hole=.3)])
-            fig_pie.update_layout(margin=dict(l=20, r=20, t=20, b=20))
-            st.plotly_chart(fig_pie, use_container_width=True)
-            
-        with col_right:
-            st.subheader("📊 PE 估值横向对比")
-            # 过滤掉非数字的 PE
-            pe_df = df_portfolio[df_portfolio["市盈率 (PE)"] != "N/A"]
-            fig_bar = go.Bar(x=pe_df["资产名称"], y=pe_df["市盈率 (PE)"], marker_color='#2962ff')
-            st.plotly_chart(go.Figure(data=[fig_bar], layout=dict(margin=dict(l=20, r=20, t=20, b=20))), use_container_width=True)
-
-# 页脚
-st.divider()
-st.markdown(f"💡 **蚂蚁和帅仔资产终端** | 数据最后同步：{datetime.now().strftime('%H:%M:%S')}")
+st.markdown("---")
+st.caption("💡 蚂蚁和帅仔人生无限公司 | V2.2 模块化对齐版")
