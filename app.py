@@ -7,6 +7,7 @@ import yfinance as yf
 import json
 import os
 from datetime import datetime, timedelta
+import akshare as ak
 
 # --- [新增：持久化数据处理函数] ---
 DATA_FILE = "portfolio.json"
@@ -40,6 +41,51 @@ def save_data(df):
     except Exception as e:
         st.error(f"保存失败: {e}")
         return False
+
+@st.cache_data(ttl=3600)
+def get_exchange_rates():
+    """获取最新汇率：美元/人民币、港币/人民币"""
+    try:
+        # 使用 akshare 获取实时汇率数据
+        fx_df = ak.fx_spot_quote()
+        usd_cny = float(fx_df[fx_df['currency'] == '美元人民币']['bid_price'].iloc[0])
+        hkd_cny = float(fx_df[fx_df['currency'] == '港元人民币']['bid_price'].iloc[0])
+        return {"USD": usd_cny, "HKD": hkd_cny, "CNY": 1.0}
+    except:
+        # 兜底汇率（万一接口请求失败）
+        return {"USD": 7.25, "HKD": 0.93, "CNY": 1.0}
+
+def fetch_asset_data(t_code):
+    """根据代码自动判断来源并获取数据"""
+    t_code = t_code.upper()
+    try:
+        # 1. A股判断 (如 600519.SS, 000001.SZ)
+        if ".SS" in t_code or ".SZ" in t_code:
+            code = t_code.split(".")[0]
+            df = ak.stock_individual_info_em(symbol=code)
+            price = df[df['item'] == '最新价']['value'].iloc[0]
+            name = df[df['item'] == '股票名称']['value'].iloc[0]
+            return {"name": name, "price": float(price), "currency": "CNY", "pe": "N/A"}
+        
+        # 2. 港股判断 (如 0700.HK)
+        elif ".HK" in t_code:
+            code = t_code.split(".")[0]
+            df = ak.stock_hk_spot_em()
+            target = df[df['代码'] == code]
+            return {
+                "name": target['名称'].iloc[0], 
+                "price": float(target['最新价'].iloc[0]), 
+                "currency": "HKD", "pe": "N/A"
+            }
+        
+        # 3. 美股/指数 (使用 yfinance 作为补充，并增加重试逻辑)
+        else:
+            tk = yf.Ticker(t_code)
+            # 使用 fast_info 减少请求压力
+            price = tk.history(period="1d")['Close'].iloc[-1]
+            return {"name": t_code, "price": float(price), "currency": "USD", "pe": "N/A"}
+    except:
+        return None
 
 # --- [模块 1: 基础配置与 CSS] ---
 st.set_page_config(page_title="蚂蚁和帅仔的私人终端", layout="wide")
@@ -123,98 +169,71 @@ if page == "🛡️ 宏观哨兵":
         r_cols[2].status("3. 流动性收紧压力", state="error" if bond_v > bond_limit else "complete")
         r_cols[3].status("4. 估值下修预警", state="error" if bond_v > bond_limit else "complete")
 
-# --- [模块 4: 资产配置 - 极简录入与补全版] ---
+# --- [模块 4: 资产配置 - AkShare + 汇率对齐版] ---
 elif page == "💰 资产配置":
-    st.title("💰 资产持仓自动管理")
+    st.title("💰 资产持仓自动管理 (CNY 计价)")
     
-    # 1. 确保数据初始化
+    # 1. 初始化数据
     if 'df_portfolio' not in st.session_state:
         st.session_state.df_portfolio = load_data()
 
-    # 2. 录入区 (保持极简)
-    with st.expander("📝 录入中心 (只需填写代码和份额)", expanded=True):
-        # 仅显示基础列用于编辑
-        input_cols = ["资产名称", "代码", "持仓份额"]
-        # 确保 session_state 里的 df 包含这些列
-        for col in input_cols:
-            if col not in st.session_state.df_portfolio.columns:
-                st.session_state.df_portfolio[col] = ""
-
+    # 2. 录入区
+    with st.expander("📝 录入中心", expanded=True):
         edited_raw = st.data_editor(
-            st.session_state.df_portfolio[input_cols],
-            num_rows="dynamic",
-            use_container_width=True,
-            key="simple_editor"
+            st.session_state.df_portfolio[["资产名称", "代码", "持仓份额"]],
+            num_rows="dynamic", use_container_width=True, key="editor_v27"
         )
-        
         if st.button("💾 保存配置"):
             save_data(edited_raw)
             st.session_state.df_portfolio = edited_raw
-            st.success("✅ 持仓配置已永久保存！")
-            st.rerun()
+            st.success("✅ 持仓已保存")
 
-    # 3. 自动补全与计算引擎 (带限流保护版)
+    # 3. 自动计算引擎
     st.divider()
-    
-    # 建立一个带缓存的抓取函数，减少对 yfinance 的请求频率
-    @st.cache_data(ttl=600)  # 10分钟内不再重复抓取同一代码
-    def fetch_single_ticker(t_code):
-        try:
-            tk = yf.Ticker(t_code)
-            # 快速检查是否有数据
-            hist = tk.history(period="1d")
-            if hist.empty: return None
-            
-            info = tk.info
-            return {
-                "name": info.get('shortName', t_code),
-                "price": hist['Close'].iloc[-1],
-                "pe": info.get('trailingPE', "N/A"),
-                "currency": info.get('currency', 'USD')
-            }
-        except Exception as e:
-            if "Rate limited" in str(e):
-                return "RATE_LIMIT"
-            return None
-
-    if st.button("🚀 执行全量自动计算"):
-        with st.spinner("正在安全连接交易所 (带限流保护)..."):
+    if st.button("🚀 执行全量自动计算 (统一汇率)"):
+        with st.spinner("正在同步全球行情及汇率..."):
+            rates = get_exchange_rates()
             final_results = []
-            rate_limit_flag = False
             
             for _, row in st.session_state.df_portfolio.iterrows():
                 t_code = str(row["代码"]).strip()
-                if not t_code or t_code in ["None", ""]: continue
+                if not t_code or t_code == "None": continue
                 
-                data_pack = fetch_single_ticker(t_code)
-                
-                if data_pack == "RATE_LIMIT":
-                    rate_limit_flag = True
-                    continue
-                if data_pack is None:
-                    continue
-                
-                # 组装数据
-                final_results.append({
-                    "资产名称": row["资产名称"] if row["资产名称"] else data_pack["name"],
-                    "代码": t_code,
-                    "持仓份额": row["持仓份额"],
-                    "实时价格": data_pack["price"],
-                    "市值": round(data_pack["price"] * row["持仓份额"], 2),
-                    "市盈率(PE)": data_pack["pe"],
-                    "币种": data_pack["currency"]
-                })
-
-            if rate_limit_flag:
-                st.warning("⚠️ 雅虎财经触发了频率限制，部分数据未能实时更新，请 5 分钟后再试。")
+                data = fetch_asset_data(t_code)
+                if data:
+                    # 汇率折算核心逻辑
+                    rate = rates.get(data["currency"], 1.0)
+                    price_cny = data["price"] * rate
+                    mkt_val_cny = price_cny * row["持仓份额"]
+                    
+                    final_results.append({
+                        "资产名称": row["资产名称"] if row["资产名称"] else data["name"],
+                        "代码": t_code,
+                        "份额": row["持仓份额"],
+                        "原始单价": f"{data['price']:.2f} ({data['currency']})",
+                        "折合单价(CNY)": round(price_cny, 2),
+                        "市值(CNY)": round(mkt_val_cny, 2)
+                    })
 
             if final_results:
                 calc_df = pd.DataFrame(final_results)
-                # ... (后续绘图和展示逻辑与之前一致)
-                st.dataframe(calc_df, use_container_width=True, hide_index=True)
-                # (此处补全之前的 Pie Chart 代码即可)
-            else:
-                st.info("💡 暂时无法获取有效数据，请稍后重试。")
+                total_cny = calc_df["市值(CNY)"].sum()
+                calc_df["权重%"] = (calc_df["市值(CNY)"] / total_cny * 100).round(2)
+
+                # 顶部摘要
+                c1, c2, c3 = st.columns(3)
+                c1.metric("总资产 (CNY)", f"¥{total_cny:,.2f}")
+                c2.metric("USD/CNY 汇率", f"{rates['USD']:.4f}")
+                c3.metric("HKD/CNY 汇率", f"{rates['HKD']:.4f}")
+
+                # 表格展示
+                st.dataframe(calc_df, use_container_width=True, hide_index=True,
+                             column_config={"权重%": st.column_config.ProgressColumn(format="%.2f%%", min_value=0, max_value=100)})
+
+                # 饼图
+                fig = go.Figure(data=[go.Pie(labels=calc_df["资产名称"], values=calc_df["市值(CNY)"], hole=.4)])
+                fig.update_layout(title="资产本位币分布 (CNY)")
+                st.plotly_chart(fig, use_container_width=True)
 
 
 st.markdown("---")
