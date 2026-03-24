@@ -8,6 +8,39 @@ import json
 import os
 from datetime import datetime, timedelta
 
+# --- [新增：持久化数据处理函数] ---
+DATA_FILE = "portfolio.json"
+
+def load_data():
+    """从本地 JSON 文件加载持仓数据"""
+    import os
+    import json
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"读取数据失败: {e}")
+    # 如果文件不存在，返回初始示例数据
+    return pd.DataFrame([
+        {"资产名称": "腾讯控股", "代码": "0700.HK", "持仓份额": 500},
+        {"资产名称": "标普500ETF", "代码": "VOO", "持仓份额": 50}
+    ])
+
+def save_data(df):
+    """将持仓数据保存到本地 JSON 文件"""
+    import json
+    try:
+        # 确保目录存在（Streamlit Cloud 环境下）
+        df_dict = df.to_dict(orient="records")
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(df_dict, f, ensure_ascii=False, indent=4)
+        return True
+    except Exception as e:
+        st.error(f"保存失败: {e}")
+        return False
+
 # --- [模块 1: 基础配置与 CSS] ---
 st.set_page_config(page_title="蚂蚁和帅仔的私人终端", layout="wide")
 beijing_time = datetime.utcnow() + timedelta(hours=8)
@@ -152,38 +185,6 @@ elif page == "💰 资产配置":
                 pe_df = final_df[final_df["PE"] != "N/A"]
                 st.plotly_chart(go.Figure(data=[go.Bar(x=pe_df["资产"], y=pe_df["PE"])]), use_container_width=True)
 
-# --- [新增：持久化数据处理函数] ---
-DATA_FILE = "portfolio.json"
-
-def load_data():
-    """从本地 JSON 文件加载持仓数据"""
-    import os
-    import json
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"读取数据失败: {e}")
-    # 如果文件不存在，返回初始示例数据
-    return pd.DataFrame([
-        {"资产名称": "腾讯控股", "代码": "0700.HK", "持仓份额": 500},
-        {"资产名称": "标普500ETF", "代码": "VOO", "持仓份额": 50}
-    ])
-
-def save_data(df):
-    """将持仓数据保存到本地 JSON 文件"""
-    import json
-    try:
-        # 确保目录存在（Streamlit Cloud 环境下）
-        df_dict = df.to_dict(orient="records")
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(df_dict, f, ensure_ascii=False, indent=4)
-        return True
-    except Exception as e:
-        st.error(f"保存失败: {e}")
-        return False
 
 st.markdown("---")
 st.caption("💡 蚂蚁和帅仔人生无限公司 | V2.2 模块化对齐版")
